@@ -1,0 +1,6 @@
+[theme]
+base = "dark"
+primaryColor = "#D51C39"            # red  - buttons, sliders, active items
+backgroundColor = "#1E0011"         # very dark shade of the maroon
+secondaryBackgroundColor = "#760031" # maroon - sidebar, cards, inputs
+textColor = "#FFF6F2"
