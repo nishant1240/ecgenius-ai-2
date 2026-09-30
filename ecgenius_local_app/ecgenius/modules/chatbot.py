@@ -56,21 +56,21 @@ def rule_based_answer(question: str, lang: str = "en") -> str:
     return table["default"]
 
 
-def _get_api_key():
+def _get_secret(name: str):
     """Look for the key in Streamlit secrets first, then environment variables."""
     try:
         import streamlit as st
-        key = st.secrets.get("ANTHROPIC_API_KEY")
+        key = st.secrets.get(name)
         if key:
             return key
     except Exception:
         pass
-    return os.environ.get("ANTHROPIC_API_KEY")
+    return os.environ.get(name)
 
 
 def cloud_chat(question: str, lang: str = "en", history=None, model: str = "claude-haiku-4-5-20251001"):
     """Cloud LLM (works on Streamlit Cloud). Returns (answer, error)."""
-    key = _get_api_key()
+    key = _get_secret("ANTHROPIC_API_KEY")
     if not key:
         return None, "No ANTHROPIC_API_KEY found in Streamlit secrets."
     try:
@@ -94,18 +94,54 @@ def cloud_chat(question: str, lang: str = "en", history=None, model: str = "clau
         return None, f"{type(e).__name__}: {e}"
 
 
+def gemini_chat(question: str, lang: str = "en", history=None, model: str = "gemini-2.5-flash-lite"):
+    """FREE cloud LLM via Google AI Studio key. Returns (answer, error)."""
+    key = _get_secret("GEMINI_API_KEY")
+    if not key:
+        return None, "No GEMINI_API_KEY found in Streamlit secrets."
+    try:
+        import requests
+        contents = []
+        for role, msg in (history or [])[-8:]:
+            contents.append({"role": "user" if role == "user" else "model",
+                             "parts": [{"text": msg.split("  \n_(")[0]}]})
+        contents.append({"role": "user", "parts": [{"text": question}]})
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json={
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT
+                    + (" Respond in Hindi." if lang == "hi" else " Respond in English.")
+                    + " Keep answers under 120 words."}]},
+                "contents": contents,
+                "generationConfig": {"maxOutputTokens": 600},
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}: {resp.text[:200]}"
+        parts = resp.json()["candidates"][0]["content"]["parts"]
+        text = "".join(p.get("text", "") for p in parts).strip()
+        return (text, None) if text else (None, "Empty response")
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
 def get_answer(question: str, lang: str = "en", history=None):
-    """Try cloud LLM -> local Ollama -> rule-based. Returns (answer, source_label)."""
+    """Try Gemini (free) -> Claude -> local Ollama -> rule-based. Returns (answer, source_label)."""
+    errors = []
+    answer, err = gemini_chat(question, lang, history)
+    if answer:
+        return answer, "Gemini AI"
+    errors.append(err)
     answer, err = cloud_chat(question, lang, history)
     if answer:
         return answer, "Claude AI"
+    errors.append(err)
     answer, used = ollama_chat(question, lang)
     if used:
         return answer, "local LLM"
-    label = "rule-based fallback"
-    if err:
-        label += f" — cloud error: {err}"
-    return answer, label
+    return answer, "rule-based fallback — " + " | ".join(e for e in errors if e)[:300]
 
 
 def ollama_chat(question: str, lang: str = "en", model: str = "deepseek-r1:8b", host: str = "http://localhost:11434"):
